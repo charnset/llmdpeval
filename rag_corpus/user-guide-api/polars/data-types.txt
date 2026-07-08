@@ -1,0 +1,145 @@
+# Data Types
+
+A column/series in Polars contains contiguous data backed by Arrow arrays,
+as well as a validity bitmap to indicate null values.
+This means all data types have a means to represent nullity.
+
+OpenDP assumes there can be nulls in all data, `.fill_null` can be used to remove them,
+and the lack of nulls is a requirement for certain aggregations.
+
+```python
+import polars as pl
+import opendp.prelude as dp
+
+dp.enable_features("contrib")
+```
+
+## Boolean
+The simplest data type, with no additional domain descriptors.
+
+## Integer
+
+OpenDP Polars supports `UInt32`, `UInt64`, `Int8`, `Int16`, `Int32` and `Int64` integer data types 
+(excluding `UInt8`, `UInt16`).
+
+OpenDP tracks lower and upper bounds of numeric data types. 
+These bounds can be acquired from `.clip` or set in the input domain (although this is not recommended),
+can be lost upon further data processing,
+and are required to use certain aggregations.
+
+## Float
+OpenDP Polars supports `Float32` and `Float64` float data types.
+
+In addition to bounds, OpenDP also tracks the potential presence of NaN values.
+OpenDP assumes there can be NaNs in float data, `.fill_nan` can be used to remove them,
+and the lack of NaNs is a requirement for certain aggregations.
+
+This means the float aggregations typically require
+preprocessing by both `.fill_null` and `.fill_nan` to impute both nulls and NaNs.
+
+## String
+Strings have no domain descriptors, 
+but also take up the most space in memory and are the slowest to work with.
+
+## Categorical
+
+Categorical data appears to be string data, 
+but its underlying data representation is `pl.UInt32` indices into an array of string labels.
+This results in much lower memory usage and a faster runtime.
+These integer indices can be retrieved via the `.to_physical` expression.
+
+Unfortunately, there are two limitations to keep in mind:
+
+* OpenDP forbids expressions that may add or remove categories,
+because this triggers a data-dependent [categorical remapping warning](https://docs.pola.rs/api/python/stable/reference/api/polars.exceptions.CategoricalRemappingWarning.html).
+Side-effects like this do not satisfy differential privacy. 
+This means OpenDP rejects the use of categorical data in, for example, `.fill_null` and binary expressions.
+* The encoding of categories typically assigns indices according to the order of records in the data.
+Since revealing row ordering does not satisfy differential privacy, 
+OpenDP only allows categorical group-by columns when the encoding is data-independent.
+The `.cut` expression, for example, has a data-independent encoding.
+
+The following code shows the latter limitation in practice:
+
+```python
+context_categorical = dp.Context.compositor(
+    data=pl.LazyFrame([pl.Series("alpha", ["A", "B", "C"] * 1000, dtype=pl.Categorical)]),
+    privacy_unit=dp.unit_of(contributions=1),
+    privacy_loss=dp.loss_of(epsilon=1.0, delta=1e-7),
+    split_evenly_over=1,
+)
+
+query = (
+    context_categorical.query()
+    .group_by("alpha")
+    .agg(dp.len())
+)
+try:
+    query.release()
+    assert False, "unreachable, should have raised"
+except dp.OpenDPException as err:
+    # the error we would expect to get:
+    assert "Categories are data-dependent" in str(err)
+```
+
+## Enum
+
+`pl.Enum` has the same representational benefits of `pl.Categorical`, 
+but the category set must always be specified in the schema.
+The benefit of this is that the indices/categories are _never_ data-dependent,
+lifting the two limitations of categorical data
+(data-dependent remapping warnings and encodings).
+
+```python
+enum_data = pl.Series(
+    "alpha",
+    ["A", "B", "C"] * 1000,
+    dtype=pl.Enum(["A", "B", "C"]),
+)
+
+context_enum = dp.Context.compositor(
+    data=pl.LazyFrame([enum_data]),
+    privacy_unit=dp.unit_of(contributions=1),
+    privacy_loss=dp.loss_of(epsilon=1.0, delta=1e-7),
+    split_evenly_over=1,
+)
+
+context_enum.query().group_by("alpha").agg(dp.len()).release().collect()
+```
+
+Since the data type is enum, not categorical, 
+OpenDP allows the release because the encoding is not data-dependent.
+
+Notice that the returned data type is categorical, not enum. 
+This is because the dataframe is returned from Rust to Python via the Apache Arrow memory specification, 
+which does not distinguish between categorical and enum data.
+
+## Temporal
+
+OpenDP supports three kinds of temporal data types: `pl.Date`, `pl.Datetime` and `pl.Time`.
+Datetimes may also store time zone information, which are considered part of the data domain 
+(all datetimes in a column must share the same time zone), 
+and may internally represent time units in terms of nanoseconds, milliseconds or microseconds.
+
+```python
+from datetime import time, datetime, date
+
+# data ingest with different kinds of temporal data
+context = dp.Context.compositor(
+    data=pl.LazyFrame({
+        "time":     [time(12, 30), time(1, 0), time(23, 10)] * 1000,
+        "datetime": [datetime(2000, 1, 1, hour=12), datetime(2020, 1, 1, hour=12)] * 1500,
+        "date":     [date(2000, 1, 1), date(2010, 1, 1), date(2020, 1, 1)] * 1000,
+    }),
+    privacy_unit=dp.unit_of(contributions=1),
+    privacy_loss=dp.loss_of(epsilon=1.0, delta=1e-7),
+    split_evenly_over=1,
+)
+
+# releasing a private histogram with common times
+query = context.query().group_by("time").agg(dp.len())
+query.release().collect()
+```
+
+Refer to the [expression documentation](expressions/index.rst) for ways to parse strings into temporal data
+and manipulate temporal data with methods in the `.dt` module.

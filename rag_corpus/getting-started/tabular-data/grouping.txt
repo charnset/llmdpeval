@@ -1,0 +1,293 @@
+# Grouping
+
+The OpenDP Library allows you to compute statistics over grouped data.
+We'll examine three approaches used to release queries that involve grouping:
+
+- Stable keys
+- Explicit keys
+- Invariant keys
+
+The [API Reference](../../api/python/opendp.extras.polars.rst) provides more information about the methods. 
+We will use the [sample data](https://github.com/opendp/dp-test-datasets/blob/main/data/eurostat/README.ipynb) from the Labour Force Survey in France.
+
+```python
+import polars as pl
+import opendp.prelude as dp
+import hvplot.polars
+
+dp.enable_features("contrib")
+```
+
+## Stable Keys
+
+Partition keys can be extremely sensitive. 
+For example, sharing a noisy count query grouped by social security number or credit card number 
+would catastrophically violate the privacy of individuals in the data.
+Similarly, re-identification of individuals can be accomplished 
+with very small combinations of grouping columns that may seem benign
+(for reference, see how [Latanya Sweeney reidentified the Governor of Massachusetts in healthcare data](https://arstechnica.com/tech-policy/2009/09/your-secrets-live-online-in-databases-of-ruin/)).
+
+For this reason, by default, the OpenDP Library discards any groups that may be unique to an individual
+by filtering out groups with too few records.
+This is why the set of released groups is considered "stable": 
+the algorithm only releases groups that remain stable (won't disappear) when any one individual is removed.
+OpenDP calibrates the filtering threshold such that the probability of releasing a group with one individual
+is no greater than the privacy parameter delta (δ).
+
+In the following example, only counts for combinations of year and sex that are common among many workers are released.
+
+```python
+context = dp.Context.compositor(
+    # Many columns contain mixtures of strings and numbers and cannot be parsed as floats,
+    # so we'll set `ignore_errors` to true to avoid conversion errors.
+    data=pl.scan_csv(dp.examples.get_france_lfs_path(), ignore_errors=True),
+    privacy_unit=dp.unit_of(contributions=36),
+    privacy_loss=dp.loss_of(epsilon=1.0 / 4, delta=1e-7),
+    # allow for one query
+    split_evenly_over=1,
+)
+
+query_age_ilostat = (
+    context.query()
+    .group_by("AGE", "ILOSTAT")
+    .agg(dp.len())
+)
+```
+
+Before releasing the query, let's take a look at properties we can expect of the output:
+
+```python
+query_age_ilostat.summarize(alpha=.05)
+```
+
+Judging from the query description, 
+noisy group lengths returned by this query will differ by no more than the given accuracy with 1 - alpha = 95% confidence.
+Any group with a noisy length below the given threshold will be filtered from the release.
+
+This level of utility seems suitable, so we'll go ahead and release the query:
+
+```python
+df = query_age_ilostat.release().collect()
+
+line = df.sort("AGE").hvplot.line(x="AGE", y="len", by="ILOSTAT")
+scatter = df.sort("AGE").hvplot.scatter(x="AGE", y="len", by="ILOSTAT")
+line * scatter
+```
+
+Referring back to the ILOSTAT legend:
+
+| ILOSTAT | Legend | Comments | 
+| ------- | ------ | ----------- | 
+| 1 | did any work for pay or profit | most common among people between 30 and 50 |
+| 2 | employed but not working | slightly more commonly observed among young adults |
+| 3 | was not working because of lay-off | clearly influenced by retirement |
+| 9 | not applicable, less than 15 years old | only present for the youngest age group |
+
+Where points are missing in the graph, 
+there are not enough individuals for that combination of age and employment status to pass threshold.
+
+## Explicit Keys
+
+If you know the grouping keys ahead-of-time, you can avoid spending the privacy parameter $\delta$ to release them.
+
+> It is recommended to only ever create one Context that spans all queries you may make on your data.
+> We create another context here to demonstrate how grouping queries can be released without the use of the privacy parameter delta.
+
+```python
+context = dp.Context.compositor(
+    # Many columns contain mixtures of strings and numbers and cannot be parsed as floats,
+    # so we'll set `ignore_errors` to true to avoid conversion errors.
+    data=pl.scan_csv(dp.examples.get_france_lfs_path(), ignore_errors=True),
+    privacy_unit=dp.unit_of(contributions=36),
+    privacy_loss=dp.loss_of(epsilon=1.0 / 4),
+    # allow for one query
+    split_evenly_over=1,
+)
+```
+
+For example, you can reuse the stable groups released in the previous query:
+
+```python
+query_age_ilostat = (
+    context.query()
+    .group_by("AGE", "ILOSTAT")
+    .agg(dp.len())
+    .with_keys(df["AGE", "ILOSTAT"])
+)
+
+query_age_ilostat.summarize()
+```
+
+`.with_keys` adds a left join where the left dataset is your explicit list of group keys 
+and the right dataset contains the results of the grouped aggregation.
+You can also write the join yourself! When using the context API, this is easier to express through a right join:
+
+```python
+query_age_ilostat = (
+    context.query()
+    .group_by("AGE", "ILOSTAT")
+    .agg(dp.len())
+    .join(df["AGE", "ILOSTAT"].lazy(), how="right", on=["AGE", "ILOSTAT"])
+)
+
+query_age_ilostat.summarize()
+```
+
+The OpenDP Library rewrites these kinds of queries to impute any missing statistics corresponding to explicit group keys that don't exist in the real data.
+The imputed values are as if you released the differentially private statistics on a group with no data.
+
+## Invariant Group Keys
+
+The OpenDP Library has the option to explicitly describe group keys as an "invariant" that can be released in the clear.
+Be aware that any aspect of your data labeled an "invariant" is not subject to privacy protections.
+Invariants __weaken__ the integrity of the privacy guarantee, 
+and open a potential vulnerability to privacy attacks.
+For this reason, you should be very reluctant to use invariants.
+
+In the case of invariant keys, even the absence of a group key can constitute a privacy violation.
+On the other hand, invariants have been used in some high-profile data releases, including by the US Census Bureau.
+
+To demonstrate this functionality, make the assumption that the quarters in which data has been collected is an invariant.
+You can mark group keys for the combination of year and quarter as invariant by setting `invariant="keys"` as follows:
+
+```python
+context = dp.Context.compositor(
+    data=pl.scan_csv(dp.examples.get_france_lfs_path(), ignore_errors=True),
+    privacy_unit=dp.unit_of(contributions=36),
+    privacy_loss=dp.loss_of(epsilon=1.0 / 4),
+    split_evenly_over=1,
+    margins=[
+        # group keys when grouped by "YEAR" and "QUARTER" are invariant
+        dp.polars.Margin(by=["YEAR", "QUARTER"], invariant="keys")
+    ],
+)
+```
+
+> It is recommended to only ever create one Context that spans all queries you may make on your data.
+> We create another context here to demonstrate how an invariant will influence the analysis.
+
+Due to the existence of this invariant, the library will now release these quarterly keys in the clear.
+
+```python
+query_quarterly_counts = (
+    context.query()
+    .group_by("YEAR", "QUARTER")
+    .agg(dp.len())
+)
+
+summary = query_quarterly_counts.summarize(alpha=.05)
+summary
+```
+
+This query description no longer has a "threshold" field: all noisy statistics computed on each group will be released.
+
+This visualization includes error bars showing 95% confidence intervals for the true value by pulling the accuracy estimate from the query description above.
+
+```python
+df = query_quarterly_counts.release().collect()
+
+# build a date column
+df = df.with_columns(pl.date(pl.col("YEAR"), pl.col("QUARTER") * 3, 1))
+
+line = df.hvplot.line(x="date", y="len")
+errorbars = df.with_columns(accuracy=summary["accuracy"][0]) \
+    .hvplot.errorbars(x="date", y="len", yerr1="accuracy")
+line * errorbars
+```
+
+Even though the noise scale and accuracy estimate is the same as in the previous protected group keys query,
+the relative error is now much larger because the group sizes are much smaller.
+In spite of this, the release clearly still shows that the number of respondents increased significantly from 2008 to 2010.
+
+### Invariant Group Lengths
+
+It is also possible to declare group lengths as invariant.
+Setting this value implies that group keys are public, 
+and thus implies an even greater risk of damaging the integrity of the privacy guarantee 
+than if you were to declare group keys as invariant.
+
+One way this could be used is as part of a release for the mean number of hours worked `HWUSUAL` by sex.
+Referring back to the `HWUSUAL` legend, a value of `99` means not applicable,
+and this encoding will significantly bias the outcome of the query.
+
+Unfortunately, filtering the data within the query results in the margin info being invalidated.
+One way to work around this limitation is to preprocess your data before passing it into the context:
+
+```python
+lf_preprocessed = pl.scan_csv(dp.examples.get_france_lfs_path(), ignore_errors=True) \
+    .filter(pl.col("HWUSUAL") < 99)
+```
+
+You can now set up your analysis such that the margin applies to the preprocessed data:
+
+```python
+context = dp.Context.compositor(
+    data=lf_preprocessed,
+    privacy_unit=dp.unit_of(contributions=36),
+    privacy_loss=dp.loss_of(epsilon=1.0, delta=1e-7),
+    split_evenly_over=1,
+    margins=[
+        # total number of responses when grouped by "SEX" is public information
+        dp.polars.Margin(
+            by=["SEX"],
+            invariant="lengths",
+            max_length=150_000 * 36,
+            max_groups=3, # encoding is M, F or null
+        )
+    ],
+)
+```
+
+You can now prepare a query that computes mean working hours by gender, where each response is clipped between 0 and 98:
+
+```python
+query_work_hours = (
+    context.query()
+    .group_by("SEX")
+    .agg(pl.col.HWUSUAL.cast(int).dp.mean((0, 98)))
+)
+
+query_work_hours.summarize(alpha=.05)
+```
+
+This time the query description breaks down into two separate statistics for the resulting `HWUSUAL` column.
+The mean is computed by dividing separate sum and length estimates.
+Since the group length is marked as public information, the length is released in the clear, without any noise.
+
+Reading the table, the smallest suitable noise scale parameter for the sum is 7056. 
+This may seem large, but remember this noisy sum will be divided by the length, reducing the variance of the final estimate.
+You can divide the sum accuracy estimate by the public group sizes to get disaggregated accuracy estimates for each group. 
+
+Be mindful that accuracy estimates for sums and means do not take into account bias introduced from clipping.
+However, for this specific dataset, 
+the codebook limits the range of work hours in `HWUSUAL` to between 0 and 98,
+so the clipping introduced for differential privacy will not further increase bias.
+
+```python
+df = query_work_hours.release().collect()
+
+# released dataframes from the OpenDP Library are shuffled to conceal the ordering of rows in the original dataset
+# therefore, to ensure proper alignment, we use join instead of hstack to add labels
+pl.DataFrame({"SEX": [1, 2], "SEX_STR": ["male", "female"]}).join(df, on="SEX")
+```
+
+Throughout this analysis, observe how the noise scale always remained fixed, regardless of group size. 
+Also observe how the more individuals there are in the data, the greater the magnitude of the statistic. 
+Therefore, as there are more individuals in a bin, the relative amount of noise decreases.
+
+Breaking the data down into too many groups, however, can result in groups having too few records and a loss of signal/poor utility.
+
+While grouping is a very useful strategy to conduct meaningful data analysis, there must be a balance, 
+because excessive grouping can lead to most of your groups being filtered, 
+and/or results that are too noisy and misleading.
+
+While not used in this section, remember that you can request multiple different statistics in one query. 
+Batching multiple statistics together can not only result in computational speedups, 
+but also more balanced allocation of privacy budget across queries, 
+and can help you avoid releasing the same protected group keys multiple times 
+(further dividing your privacy budget).
+
+In a real data setting where you want to mediate all access to the data through one Context,
+you can provide domain descriptors for many margins, 
+allowing you to relax protections over specific grouping columns, 
+while enforcing full protections for all other grouping columns.
