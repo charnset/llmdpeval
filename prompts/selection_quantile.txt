@@ -1,0 +1,15 @@
+You are given a csv file `adult_clean.csv`.
+
+Write executable Python code to compute one differentially private query answer for the following task:
+
+Query type: Quantile
+Query definition: Compute the 0.25, 0.50, and 0.75 quantiles of the target column
+Target column: `age`
+
+Requirements:
+1. Compute the true, non-private answer to the query.
+2. Compute a differentially private version of the same query.
+3. Use the following privacy parameters: mechanism = exponential, epsilon = 1, and sensitivity = 1.
+4. Use the following DP framework: OpenDP.
+5. Print the true answer and the private answer.
+6. Return only executable Python code.

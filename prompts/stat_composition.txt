@@ -1,0 +1,23 @@
+You are given a csv file `adult_clean.csv`.
+
+Write executable Python code to compute differentially private answers for the following task:
+
+Query type: Composition
+Query definition: Compute the following queries on the target columns.
+Number of queries: 5
+Target columns: [`income`, `age`, `education`]
+Queries:
+    - count of rows where `income == ">50K"`
+    - average `age`
+    - average `age` where `income == ">50K"`
+    - number of rows where `income == ">50K" and education == "Master"`
+    - average `age` where `income == ">50K" and education == "Master"`
+
+
+Requirements:
+1. Compute the true, non-private answer for each query.
+2. Compute a differentially private answer for each query.
+3. Use the following privacy parameters: mechanism = laplace, epsilon = 1 (total), and age bounds = [18, 100].
+4. Use the following DP framework: OpenDP.
+5. Print the true and differentially private answers for each query.
+6. Return only executable Python code.

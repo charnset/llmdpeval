@@ -56,21 +56,39 @@ def response_to_code(response) -> str:
     return text.strip() + "\n"
 
 
+def create_generation_output_dir(
+    *,
+    llm_model: str,
+    rag_enabled: bool,
+    task_name: str,
+    framework: str,
+) -> Path:
+    rag_use = "rag" if rag_enabled else ""
+    timestamp = time.time_ns()
+    output_dir = GENERATED_CODE_DIR / "_".join(
+        [
+            safe_path_part(llm_model),
+            rag_use,
+            safe_path_part(task_name),
+            safe_path_part(framework),
+            str(timestamp),
+        ]
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
+def safe_path_part(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("._") or "unknown"
+
+
 def save_generated_code(
     *,
     generated_code: str,
-    task_name: str,
-    rag_enabled: bool,
-    llm_model: str,
+    output_dir: str | Path,
+    run_index: int,
 ) -> Path:
-    GENERATED_CODE_DIR.mkdir(parents=True, exist_ok=True)
-    llm_name_match = re.match(r"[A-Za-z]+", llm_model)
-    llm_name = llm_name_match.group(0) if llm_name_match else llm_model
-    rag_suffix = "_rag" if rag_enabled else ""
-    timestamp = int(time.time())
-    save_code_file_path = (
-        GENERATED_CODE_DIR / f"{task_name}_{llm_name}{rag_suffix}_{timestamp}.py"
-    )
+    save_code_file_path = Path(output_dir) / f"code_{run_index}.py"
     save_code_file_path.write_text(generated_code, encoding="utf-8")
     return save_code_file_path
 
@@ -78,11 +96,12 @@ def save_generated_code(
 @weave.op()
 def trace_code_generation(
     *,
-    embed_model: str,
+    embed_model: str | None,
     llm_model: str,
     rag_enabled: bool,
     task_name: str,
-    task_description: str,
+    output_dir: str,
+    run_index: int,
     retrieved_nodes: list[dict],
     unique_retrieved_paths: list[str],
     final_prompt: str,
@@ -91,9 +110,8 @@ def trace_code_generation(
     generated_code = response_to_code(response)
     save_code_file_path = save_generated_code(
         generated_code=generated_code,
-        task_name=task_name,
-        rag_enabled=rag_enabled,
-        llm_model=llm_model,
+        output_dir=output_dir,
+        run_index=run_index,
     )
 
     return {

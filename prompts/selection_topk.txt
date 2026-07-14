@@ -1,0 +1,18 @@
+You are given a csv file `adult_clean.csv`.
+
+Write executable Python code to compute one differentially private query answer for the following task:
+
+Query type: Top-K
+Query definition: For each distinct value in the candidate column, compute the proportion of rows that satisfy the specified condition on the target column. Return the K candidate values with the highest proportions.
+K: 5
+Candidate column: `occupation`
+Target column: `income`
+Condition: `income == ">50K"`
+
+Requirements:
+1. Compute the true, non-private answer to the query.
+2. Compute a differentially private version of the same query.
+3. Use the following privacy parameters: mechanism = exponential, epsilon = 1, and sensitivity = 1.
+4. Use the following DP framework: OpenDP.
+5. Print the true answer and the private answer.
+6. Return only executable Python code.

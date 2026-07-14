@@ -1,0 +1,21 @@
+You are given a csv file `auto_mpg_clean.csv`.
+
+Write executable Python code to compute one differentially private query answer for the following task:
+
+Query type: Linear Regression
+Query definition: Fit a DP linear regression model using the specified predictor columns to predict the outcome column. Then use the fitted model to predict the given test input.
+Predictor columns: [`displacement`, `horsepower`, `weight`, `acceleration`]
+Outcome column: `mpg`
+Test input: [[200, 100, 4500, 10]]
+
+Requirements:
+1. Compute the true (non-private) prediction by fitting a standard linear regression model and predicting the outcome for the given test input.
+2. Compute the differentially private prediction by fitting a differentially private linear regression model and predicting the outcome for the same test input.
+3. Use the following privacy parameters:
+    - epsilon = 1
+    - bounds_X = ([68.0, 46.0, 1613.0, 8.0], [455.0, 230.0, 5140.0, 24.8])
+    - bounds_y = (9.0, 46.6)
+
+4. Use the following DP framework: OpenDP.
+5. Print both the true prediction and the differentially private prediction.
+6. Return only executable Python code.

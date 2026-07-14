@@ -1,0 +1,15 @@
+You are given a csv file `adult_clean.csv`.
+
+Write executable Python code to compute one differentially private query answer for the following task:
+
+Query type: Mean
+Query definition: Calculate the average value of the target column
+Target column: `age`
+
+Requirements:
+1. Compute the true, non-private answer to the query.
+2. Compute a differentially private version of the same query.
+3. Use the following privacy parameters: mechanism = laplace, epsilon = 1, and age bounds = [18, 100]
+4. Use the following DP framework: OpenDP.
+5. Print the true answer and the private answer.
+6. Return only executable Python code.

@@ -1,12 +1,156 @@
+import os
+import re
 from pathlib import Path
 from pprint import pprint
 from typing import Any
 
-import yaml
-
+from llama_index.core import Settings
 from llama_index.core.schema import TextNode
+from llama_index.embeddings.ollama import OllamaEmbedding
+from llama_index.embeddings.openai import OpenAIEmbedding
+from llama_index.llms.anthropic import Anthropic
+from llama_index.llms.google_genai import GoogleGenAI
+from llama_index.llms.ollama import Ollama
+from llama_index.llms.openai import OpenAI
 
 from metadata import extract_document_section_records_from_file
+
+RAG_CORPUS_PATH = Path("rag_corpus")
+PROMPT_DIR = Path("prompts")
+DP_FRAMEWORK_REQUIREMENT_PATTERN = re.compile(
+    r"^4\. Use the following DP framework: .+\.$",
+    flags=re.MULTILINE,
+)
+API_KEY_PATHS = {
+    "anthropic": Path("anthropic_key.txt"),
+    "gemini": Path("gemini_key.txt"),
+    "openai": Path("openai_key.txt"),
+}
+API_KEY_ENV_VARS = {
+    "anthropic": ("ANTHROPIC_API_KEY",),
+    "gemini": ("GOOGLE_API_KEY",),
+    "openai": ("OPENAI_API_KEY",),
+}
+RETRIEVAL_TOP_K = 6
+SIMILARITY_THRESHOLD = 0.35
+MAX_OUTPUT_TOKENS = 4096
+
+LOCAL_EMBED_MODEL = "nomic-embed-text"
+LOCAL_LLM_MODEL = "llama3.2"
+
+EMBED_MODELS = {
+    "nomic-embed-text": {
+        "provider": "ollama",
+        "persist_dir": Path("storage/llamaindex_ollama_nomic"),
+    },
+    "text-embedding-3-large": {
+        "provider": "openai",
+        "persist_dir": Path("storage/llamaindex_openai"),
+    },
+}
+
+LLM_MODELS = {
+    "llama3.2": "ollama",
+    "gpt-5.4": "openai",
+    "gpt-5.4-nano": "openai",
+    "gemini-3.1-flash-lite": "gemini",
+    "claude-haiku-4-5": "anthropic",
+    "qwen2.5-coder:7b": "ollama",
+    "codellama:7b": "ollama",
+}
+
+
+def selected_embed_model(args) -> str:
+    embed_model_name = args.embed or LOCAL_EMBED_MODEL
+    if embed_model_name not in EMBED_MODELS:
+        raise ValueError(
+            f"Unsupported embedding model: {embed_model_name}. "
+            f"Choose from: {', '.join(EMBED_MODELS)}"
+        )
+    return embed_model_name
+
+
+def selected_llm_model(args) -> str:
+    llm_model_name = args.llm or LOCAL_LLM_MODEL
+    if llm_model_name not in LLM_MODELS:
+        raise ValueError(
+            f"Unsupported LLM model: {llm_model_name}. "
+            f"Choose from: {', '.join(LLM_MODELS)}"
+        )
+    return llm_model_name
+
+
+def configure_models(
+    embed_model_name: str | None = None,
+    llm_model_name: str | None = None,
+) -> None:
+    embed_provider = (
+        EMBED_MODELS[embed_model_name]["provider"] if embed_model_name else None
+    )
+    llm_provider = LLM_MODELS[llm_model_name] if llm_model_name else None
+
+    for provider in {embed_provider, llm_provider}:
+        load_api_key(provider)
+
+    embed_model_builders = {
+        "ollama": lambda model_name: OllamaEmbedding(model_name=model_name),
+        "openai": lambda model_name: OpenAIEmbedding(model=model_name),
+    }
+    llm_builders = {
+        "anthropic": build_anthropic_llm,
+        "gemini": build_gemini_llm,
+        "ollama": build_ollama_llm,
+        "openai": build_openai_llm,
+    }
+
+    if embed_model_name:
+        Settings.embed_model = embed_model_builders[embed_provider](embed_model_name)
+
+    if llm_model_name:
+        Settings.llm = llm_builders[llm_provider](llm_model_name)
+
+    if embed_model_name:
+        print(f"Using {embed_provider} embedding model: {embed_model_name}")
+    if llm_model_name:
+        print(f"Using {llm_provider} LLM model: {llm_model_name}")
+
+
+def load_api_key(provider: str | None) -> None:
+    if provider not in API_KEY_PATHS:
+        return
+
+    api_key = API_KEY_PATHS[provider].read_text(encoding="utf-8").strip()
+    for env_var in API_KEY_ENV_VARS[provider]:
+        os.environ[env_var] = api_key
+
+
+def build_openai_llm(model_name: str):
+    return OpenAI(model=model_name, temperature=0.0, max_tokens=MAX_OUTPUT_TOKENS)
+
+
+def build_ollama_llm(model_name: str):
+    return Ollama(
+        model=model_name,
+        temperature=0.0,
+        request_timeout=300.0,
+        additional_kwargs={"num_predict": MAX_OUTPUT_TOKENS},
+    )
+
+
+def build_gemini_llm(model_name: str):
+    return GoogleGenAI(
+        model=model_name,
+        temperature=0.0,
+        max_tokens=MAX_OUTPUT_TOKENS,
+    )
+
+
+def build_anthropic_llm(model_name: str):
+    return Anthropic(model=model_name, temperature=0.0, max_tokens=MAX_OUTPUT_TOKENS)
+
+
+def persist_dir_for_embedding(embed_model_name: str) -> Path:
+    return EMBED_MODELS[embed_model_name]["persist_dir"]
 
 
 class LlamaIndexRAGPreprocessor:
@@ -70,14 +214,17 @@ class LlamaIndexRAGPreprocessor:
         """Convert one document-section record into a LlamaIndex TextNode."""
 
         metadata = document_section_record["metadata"].copy()
+        section_text = document_section_record["text"].strip()
         node_text = (
             f"Document title: {metadata['document_title']}\n"
-            f"Section: {metadata['document_section']}"
+            f"Section: {metadata['document_section']}\n\n"
+            f"{section_text}"
         )
         return TextNode(
             text=node_text,
             metadata=metadata,
             id_=self._build_node_id(metadata),
+            excluded_embed_metadata_keys=sorted(metadata),
         )
 
     def print_nodes(self, limit: int | None = 10) -> None:
@@ -137,23 +284,29 @@ def print_nodes(nodes: list[TextNode], limit: int | None = 10) -> None:
         print(node_text[:1_000])
 
 
-def load_prompt(prompt_path: Path, prompt_value_path: Path) -> str:
-    prompt_template = prompt_path.read_text(encoding="utf-8")
-    prompt_values = load_prompt_values(prompt_value_path)
-    return prompt_template.format(**prompt_values)
+def load_prompt(task: str, framework: str = "OpenDP") -> str:
+    prompt_path = PROMPT_DIR / f"{task}.txt"
+    if not prompt_path.is_file():
+        raise ValueError(f"Unsupported task: {task}. Choose from: {available_prompts()}")
+
+    prompt = prompt_path.read_text(encoding="utf-8")
+    return set_prompt_framework(prompt, framework)
 
 
-def load_prompt_values(prompt_value_path: Path) -> dict[str, Any]:
-    return yaml.safe_load(prompt_value_path.read_text(encoding="utf-8"))
-
-
-def load_retrieval_query(prompt_value_path: Path) -> str:
-    prompt_values = load_prompt_values(prompt_value_path)
-    return (
-        f"Query type: {prompt_values['query_type']}\n"
-        f"Query definition: {prompt_values['query_definition']}\n"
-        f"Mechanism: {prompt_values['mechanism']}"
+def set_prompt_framework(prompt: str, framework: str) -> str:
+    prompt, replacement_count = DP_FRAMEWORK_REQUIREMENT_PATTERN.subn(
+        f"4. Use the following DP framework: {framework}.",
+        prompt,
+        count=1,
     )
+    if replacement_count == 0:
+        raise ValueError("Prompt is missing requirement 4 for the DP framework.")
+
+    return prompt
+
+
+def available_prompts() -> list[str]:
+    return sorted(prompt_path.stem for prompt_path in PROMPT_DIR.glob("*.txt"))
 
 
 def print_prompt(prompt: str, title: str = "Filled prompt") -> None:

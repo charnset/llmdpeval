@@ -1,0 +1,16 @@
+You are given a csv file `auto_mpg_clean.csv`.
+
+Write executable Python code to compute one differentially private query answer for the following task:
+
+Query type: PCA
+Query definition: Fit PCA on the specified target columns, then return the top N principal components and the corresponding transformed output.
+Target columns: [`displacement`, `horsepower`, `weight`, `acceleration`, `mpg`]
+N: 2
+
+Requirements:
+1. Compute the true (non-private) PCA result using standard PCA.
+2. Compute a differentially private version of the same PCA result.
+3. Use the following privacy parameters: epsilon = 1
+4. Use the following DP framework: OpenDP.
+5. Print both the true result and the differentially private result.
+6. Return only executable Python code.

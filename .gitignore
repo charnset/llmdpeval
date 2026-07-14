@@ -1,0 +1,10 @@
+.python-version
+.vscode/
+**/__pycache__/
+anthropic_key.txt
+gemini_key.txt
+generated_code/
+openai_key.txt
+storage/
+venv/
+weave_key.txt
